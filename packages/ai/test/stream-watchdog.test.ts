@@ -154,6 +154,60 @@ describe("wrapStreamWithWatchdog", () => {
 		expect(result.stopReason).toBe("stop");
 	});
 
+	it("preserves partial content and usage from last seen partial when stalling", async () => {
+		const upstream = new AssistantMessageEventStream();
+		const wrapped = wrapStreamWithWatchdog(upstream, { ...baseCtx, timeoutMs: 60, abort: () => {} });
+
+		const richPartial: AssistantMessage = {
+			...emptyAssistant(),
+			content: [
+				{ type: "text", text: "hello so far" },
+				{ type: "toolCall", id: "call-1", name: "calc", arguments: { a: 1 } },
+			],
+			usage: {
+				input: 42,
+				output: 7,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 49,
+				cost: { input: 0.001, output: 0.0007, cacheRead: 0, cacheWrite: 0, total: 0.0017 },
+			},
+			responseId: "resp-abc",
+		};
+		upstream.push({ type: "start", partial: richPartial });
+		upstream.push({ type: "text_delta", contentIndex: 0, delta: "hello so far", partial: richPartial });
+		// then go silent
+
+		const result = await wrapped.result();
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("stream stalled");
+		// partial content + usage + responseId carried over
+		expect(result.content.length).toBe(2);
+		expect((result.content[0] as { type: string; text: string }).text).toBe("hello so far");
+		expect(result.usage.input).toBe(42);
+		expect(result.usage.output).toBe(7);
+		expect(result.responseId).toBe("resp-abc");
+		// scratch fields stripped on tool-call blocks (defensive)
+		const toolBlock = result.content[1] as unknown as Record<string, unknown>;
+		expect(toolBlock.partialArgs).toBeUndefined();
+		expect(toolBlock.streamIndex).toBeUndefined();
+		expect(toolBlock.index).toBeUndefined();
+	});
+
+	it("snapshot is a clone — mutating the result does not affect upstream partial", async () => {
+		const upstream = new AssistantMessageEventStream();
+		const wrapped = wrapStreamWithWatchdog(upstream, { ...baseCtx, timeoutMs: 50, abort: () => {} });
+		const partial: AssistantMessage = {
+			...emptyAssistant(),
+			content: [{ type: "text", text: "abc" }],
+		};
+		upstream.push({ type: "start", partial });
+
+		const result = await wrapped.result();
+		(result.content[0] as { type: "text"; text: string }).text = "MUTATED";
+		expect((partial.content[0] as { type: "text"; text: string }).text).toBe("abc");
+	});
+
 	it("propagates upstream error events without firing watchdog", async () => {
 		const upstream = new AssistantMessageEventStream();
 		let abortCalled = false;
