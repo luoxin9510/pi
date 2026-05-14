@@ -44,6 +44,22 @@ export interface WatchdogContext {
 }
 
 /**
+ * Clone an in-progress AssistantMessage so it can be used as a final synthetic
+ * error payload without mutating shared state held by the provider, and strip
+ * scratch fields (`partialArgs`, `streamIndex`, `index`) that some providers
+ * attach to tool-call blocks during streaming.
+ */
+function snapshotPartial(partial: AssistantMessage): AssistantMessage {
+	const clone = JSON.parse(JSON.stringify(partial)) as AssistantMessage;
+	for (const block of clone.content) {
+		delete (block as { index?: number }).index;
+		delete (block as { partialArgs?: string }).partialArgs;
+		delete (block as { streamIndex?: number }).streamIndex;
+	}
+	return clone;
+}
+
+/**
  * Wrap an upstream AssistantMessageEventStream with a stall watchdog.
  *
  * Each event resets a timer. If no event arrives within `timeoutMs`, the watchdog:
@@ -63,18 +79,20 @@ export function wrapStreamWithWatchdog(
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let stalled = false;
 	let terminated = false;
+	// Most recent partial AssistantMessage observed on a non-terminal event.
+	// On stall we use this as the base so already-streamed content and usage
+	// are preserved instead of dropped.
+	let lastPartial: AssistantMessage | undefined;
 
-	const fireStall = () => {
-		if (terminated) return;
-		stalled = true;
-		terminated = true;
-		try {
-			ctx.abort(new Error(`pi-ai stream-stall watchdog: no chunks for ${ctx.timeoutMs}ms`));
-		} catch {
-			// swallow — provider may already be torn down
+	const buildErrorMessage = (errorMessage: string): AssistantMessage => {
+		if (lastPartial) {
+			const snap = snapshotPartial(lastPartial);
+			snap.stopReason = "error";
+			snap.errorMessage = errorMessage;
+			snap.timestamp = Date.now();
+			return snap;
 		}
-		const errorMessage = `${STREAM_STALL_ERROR_PREFIX} > ${(ctx.timeoutMs / 60_000).toFixed(2)} min, aborting`;
-		const errMsg: AssistantMessage = {
+		return {
 			role: "assistant",
 			content: [],
 			api: ctx.api,
@@ -92,7 +110,19 @@ export function wrapStreamWithWatchdog(
 			errorMessage,
 			timestamp: Date.now(),
 		};
-		wrapped.push({ type: "error", reason: "error", error: errMsg });
+	};
+
+	const fireStall = () => {
+		if (terminated) return;
+		stalled = true;
+		terminated = true;
+		try {
+			ctx.abort(new Error(`pi-ai stream-stall watchdog: no chunks for ${ctx.timeoutMs}ms`));
+		} catch {
+			// swallow — provider may already be torn down
+		}
+		const errorMessage = `${STREAM_STALL_ERROR_PREFIX} > ${(ctx.timeoutMs / 60_000).toFixed(2)} min, aborting`;
+		wrapped.push({ type: "error", reason: "error", error: buildErrorMessage(errorMessage) });
 	};
 
 	const armTimer = () => {
@@ -107,6 +137,11 @@ export function wrapStreamWithWatchdog(
 			for await (const event of upstream) {
 				if (stalled) break;
 				armTimer();
+				// Track latest in-progress AssistantMessage. All event types except
+				// `done`/`error` carry a `partial` field per the protocol.
+				if ("partial" in event && event.partial) {
+					lastPartial = event.partial;
+				}
 				wrapped.push(event);
 				if (event.type === "done" || event.type === "error") {
 					terminated = true;
@@ -116,25 +151,8 @@ export function wrapStreamWithWatchdog(
 		} catch (err) {
 			if (!terminated) {
 				terminated = true;
-				const errMsg: AssistantMessage = {
-					role: "assistant",
-					content: [],
-					api: ctx.api,
-					provider: ctx.provider,
-					model: ctx.model,
-					usage: {
-						input: 0,
-						output: 0,
-						cacheRead: 0,
-						cacheWrite: 0,
-						totalTokens: 0,
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-					},
-					stopReason: "error",
-					errorMessage: err instanceof Error ? err.message : String(err),
-					timestamp: Date.now(),
-				};
-				wrapped.push({ type: "error", reason: "error", error: errMsg });
+				const errorMessage = err instanceof Error ? err.message : String(err);
+				wrapped.push({ type: "error", reason: "error", error: buildErrorMessage(errorMessage) });
 			}
 		} finally {
 			if (timer) {
