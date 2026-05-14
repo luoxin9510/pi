@@ -371,4 +371,58 @@ describe("parseArgs", () => {
 			expect(result.messages).toEqual(["Do the task"]);
 		});
 	});
+
+	describe("--stream-timeout flag", () => {
+		test("parses integer minutes", () => {
+			const result = parseArgs(["--stream-timeout", "3"]);
+			expect(result.streamStallTimeoutMinutes).toBe(3);
+			expect(result.diagnostics).toEqual([]);
+		});
+
+		test("parses fractional minutes", () => {
+			const result = parseArgs(["--stream-timeout", "0.5"]);
+			expect(result.streamStallTimeoutMinutes).toBe(0.5);
+		});
+
+		test("0 disables (still parsed)", () => {
+			const result = parseArgs(["--stream-timeout", "0"]);
+			expect(result.streamStallTimeoutMinutes).toBe(0);
+		});
+
+		test("rejects negative", () => {
+			const result = parseArgs(["--stream-timeout", "-1"]);
+			expect(result.streamStallTimeoutMinutes).toBeUndefined();
+			expect(result.diagnostics.some((d) => d.type === "error")).toBe(true);
+		});
+
+		test("rejects non-numeric", () => {
+			const result = parseArgs(["--stream-timeout", "soon"]);
+			expect(result.streamStallTimeoutMinutes).toBeUndefined();
+			expect(result.diagnostics.some((d) => d.type === "error")).toBe(true);
+		});
+	});
+
+	describe("--stream-retries flag", () => {
+		test("parses non-negative integer", () => {
+			const result = parseArgs(["--stream-retries", "2"]);
+			expect(result.streamStallRetries).toBe(2);
+		});
+
+		test("0 disables (still parsed)", () => {
+			const result = parseArgs(["--stream-retries", "0"]);
+			expect(result.streamStallRetries).toBe(0);
+		});
+
+		test("rejects fractional", () => {
+			const result = parseArgs(["--stream-retries", "1.5"]);
+			expect(result.streamStallRetries).toBeUndefined();
+			expect(result.diagnostics.some((d) => d.type === "error")).toBe(true);
+		});
+
+		test("rejects negative", () => {
+			const result = parseArgs(["--stream-retries", "-1"]);
+			expect(result.streamStallRetries).toBeUndefined();
+			expect(result.diagnostics.some((d) => d.type === "error")).toBe(true);
+		});
+	});
 });

@@ -437,6 +437,14 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	const parsed = parseArgs(args);
+	// Surface stream-stall watchdog CLI flags as env vars so pi-ai picks them
+	// up at stream() time. (pi-ai reads PI_STREAM_STALL_* directly.)
+	if (parsed.streamStallTimeoutMinutes !== undefined) {
+		process.env.PI_STREAM_STALL_TIMEOUT_MINUTES = String(parsed.streamStallTimeoutMinutes);
+	}
+	if (parsed.streamStallRetries !== undefined) {
+		process.env.PI_STREAM_STALL_RETRIES = String(parsed.streamStallRetries);
+	}
 	if (parsed.diagnostics.length > 0) {
 		for (const d of parsed.diagnostics) {
 			const color = d.type === "error" ? chalk.red : chalk.yellow;
