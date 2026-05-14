@@ -43,6 +43,8 @@ export interface Args {
 	listModels?: string | true;
 	offline?: boolean;
 	verbose?: boolean;
+	streamStallTimeoutMinutes?: number;
+	streamStallRetries?: number;
 	messages: string[];
 	fileArgs: string[];
 	/** Unknown flags (potentially extension flags) - map of flag name to value */
@@ -162,6 +164,28 @@ export function parseArgs(args: string[]): Args {
 			result.verbose = true;
 		} else if (arg === "--offline") {
 			result.offline = true;
+		} else if (arg === "--stream-timeout" && i + 1 < args.length) {
+			const raw = args[++i];
+			const minutes = Number(raw);
+			if (!Number.isFinite(minutes) || minutes < 0) {
+				result.diagnostics.push({
+					type: "error",
+					message: `--stream-timeout expects a non-negative number of minutes (got "${raw}")`,
+				});
+			} else {
+				result.streamStallTimeoutMinutes = minutes;
+			}
+		} else if (arg === "--stream-retries" && i + 1 < args.length) {
+			const raw = args[++i];
+			const retries = Number(raw);
+			if (!Number.isFinite(retries) || retries < 0 || !Number.isInteger(retries)) {
+				result.diagnostics.push({
+					type: "error",
+					message: `--stream-retries expects a non-negative integer (got "${raw}")`,
+				});
+			} else {
+				result.streamStallRetries = retries;
+			}
 		} else if (arg.startsWith("@")) {
 			result.fileArgs.push(arg.slice(1)); // Remove @ prefix
 		} else if (arg.startsWith("--")) {
@@ -247,6 +271,14 @@ ${chalk.bold("Options:")}
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
   --offline                      Disable startup network operations (same as PI_OFFLINE=1)
+  --stream-timeout <minutes>     Inter-chunk stall watchdog timeout in minutes. If the
+                                 upstream LLM stream emits no events for this long, the
+                                 request is aborted with an error. 0 disables. Default: 5.
+                                 (Same as env PI_STREAM_STALL_TIMEOUT_MINUTES.)
+  --stream-retries <n>           How many times to retry on a watchdog-triggered stall
+                                 when no content was emitted yet (true initial hang only).
+                                 0 disables. Default: 1.
+                                 (Same as env PI_STREAM_STALL_RETRIES.)
   --help, -h                     Show this help
   --version, -v                  Show version number
 
