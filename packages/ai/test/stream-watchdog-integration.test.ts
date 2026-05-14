@@ -148,6 +148,35 @@ describe("stream() integration with watchdog", () => {
 		expect(result.stopReason).toBe("stop");
 	});
 
+	it("watchdog terminates the consumer even when provider ignores AbortSignal", async () => {
+		// Misbehaving provider: never honors signal, never emits anything.
+		// Without upstream.end() in fireStall, the watchdog's forwarding coroutine
+		// would be leaked but — critically — the wrapped consumer must still
+		// resolve so the caller doesn't hang.
+		registerApiProvider(
+			{
+				api: HANG_API,
+				stream: (_model, _context, _options) => {
+					// Note: NO signal listener at all.
+					return createAssistantMessageEventStream();
+				},
+				streamSimple: () => createAssistantMessageEventStream(),
+			},
+			HANG_SOURCE,
+		);
+
+		const start = Date.now();
+		const result = await complete(hangModel(), emptyContext(), {
+			streamStallTimeoutMs: 80,
+			streamStallRetries: 0,
+		});
+		const elapsed = Date.now() - start;
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("stream stalled");
+		// Resolution must happen near the watchdog window, not hang.
+		expect(elapsed).toBeLessThan(2000);
+	});
+
 	it("user-supplied AbortSignal still aborts when watchdog active", async () => {
 		let providerSawAbort = false;
 		registerApiProvider(

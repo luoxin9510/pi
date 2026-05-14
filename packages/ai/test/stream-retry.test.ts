@@ -266,6 +266,58 @@ describe("stream() integration — retry on stall", () => {
 		expect(result.stopReason).toBe("stop");
 	});
 
+	it("user-supplied AbortSignal aborts during retry attempt 2", async () => {
+		let attempt = 0;
+		const attemptControllers: AbortSignal[] = [];
+		registerApiProvider(
+			{
+				api: RETRY_API,
+				stream: (m, _c, options) => {
+					attempt++;
+					const s = createAssistantMessageEventStream();
+					if (options?.signal) attemptControllers.push(options.signal);
+					if (attempt === 1) {
+						// hang -> watchdog fires -> retry
+						options?.signal?.addEventListener("abort", () => s.end());
+					} else {
+						// On retry attempt 2, listen for the user abort signal and emit
+						// an "aborted" terminal event when fired.
+						options?.signal?.addEventListener("abort", () => {
+							s.push({
+								type: "error",
+								reason: "aborted",
+								error: { ...emptyMsg("aborted", "user cancel"), api: m.api, provider: m.provider, model: m.id },
+							});
+							s.end();
+						});
+					}
+					return s;
+				},
+				streamSimple: () => createAssistantMessageEventStream(),
+			},
+			RETRY_SOURCE,
+		);
+
+		const userCtl = new AbortController();
+		// Watchdog window of 80ms per attempt: attempt 1 stalls at ~80ms, retry
+		// fires, attempt 2 starts. We abort at ~120ms (40ms into attempt 2),
+		// well before attempt 2's own watchdog window expires.
+		const promise = complete(model(), ctx(), {
+			streamStallTimeoutMs: 80,
+			streamStallRetries: 1,
+			signal: userCtl.signal,
+		});
+		await new Promise((r) => setTimeout(r, 120));
+		userCtl.abort(new Error("user cancel"));
+		const result = await promise;
+		expect(attempt).toBe(2);
+		expect(result.stopReason).toBe("aborted");
+		expect(result.errorMessage).toBe("user cancel");
+		// The second attempt's signal should reflect the user abort (separate
+		// AbortController per attempt, but both linked to the user signal).
+		expect(attemptControllers[1].aborted).toBe(true);
+	});
+
 	it("end-to-end: streamStallRetries=0 disables retry, surfaces stall", async () => {
 		let attempt = 0;
 		registerApiProvider(

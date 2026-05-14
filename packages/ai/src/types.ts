@@ -155,6 +155,9 @@ export interface StreamOptions {
 	 * retry because the LLM produced nothing replayable). Stalls that happen
 	 * mid-generation are never retried.
 	 *
+	 * Has no effect when `streamStallTimeoutMs` is 0 (watchdog disabled), since
+	 * a disabled watchdog never fires a stall to retry on.
+	 *
 	 * Precedence: this option > env var `PI_STREAM_STALL_RETRIES` > 1 (default).
 	 * Set to 0 to disable retry.
 	 */
