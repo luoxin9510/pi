@@ -116,6 +116,10 @@ export function wrapStreamWithWatchdog(
 		if (terminated) return;
 		stalled = true;
 		terminated = true;
+		if (timer) {
+			clearTimeout(timer);
+			timer = undefined;
+		}
 		try {
 			ctx.abort(new Error(`pi-ai stream-stall watchdog: no chunks for ${ctx.timeoutMs}ms`));
 		} catch {
@@ -123,6 +127,15 @@ export function wrapStreamWithWatchdog(
 		}
 		const errorMessage = `${STREAM_STALL_ERROR_PREFIX} > ${(ctx.timeoutMs / 60_000).toFixed(2)} min, aborting`;
 		wrapped.push({ type: "error", reason: "error", error: buildErrorMessage(errorMessage) });
+		// Force the upstream iterator to terminate so our forwarding coroutine
+		// can exit even if the provider ignores the abort signal. EventStream.end()
+		// is idempotent and subsequent push()es become no-ops, so this is safe
+		// even when the provider does eventually emit something.
+		try {
+			upstream.end();
+		} catch {
+			// swallow
+		}
 	};
 
 	const armTimer = () => {

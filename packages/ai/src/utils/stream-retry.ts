@@ -65,7 +65,13 @@ export function wrapStreamWithRetry(
 				} else if (event.type === "start") {
 					buffered.push(event);
 				} else {
-					// First content event — flush leading start (if any) and lock out retry.
+					// First non-`start` event — flush leading start (if any) and lock
+					// out retry. Note: this is intentionally conservative — even
+					// zero-content marker events (`text_start`, `thinking_start`,
+					// `toolcall_start`) close the retry door, because any signal that
+					// the LLM has begun producing output means a replay could
+					// duplicate or interleave content. Trading one possible retry
+					// opportunity for stronger non-duplication guarantees.
 					for (const e of buffered) outer.push(e);
 					buffered.length = 0;
 					outer.push(event);

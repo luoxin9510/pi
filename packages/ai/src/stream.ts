@@ -41,6 +41,12 @@ function applyResilience<TApi extends Api>(
 		// doesn't cancel the request of attempt N+1.
 		const attemptController = new AbortController();
 		let userAbortListener: (() => void) | undefined;
+		const detach = () => {
+			if (userSignal && userAbortListener) {
+				userSignal.removeEventListener("abort", userAbortListener);
+				userAbortListener = undefined;
+			}
+		};
 		if (userSignal) {
 			if (userSignal.aborted) {
 				attemptController.abort(userSignal.reason);
@@ -51,16 +57,20 @@ function applyResilience<TApi extends Api>(
 		}
 
 		const upstream = run({ ...options, signal: attemptController.signal } as StreamOptions);
-		return wrapStreamWithWatchdog(upstream, {
+		const wrapped = wrapStreamWithWatchdog(upstream, {
 			timeoutMs,
 			abort: (reason) => {
 				if (!attemptController.signal.aborted) attemptController.abort(reason);
-				if (userSignal && userAbortListener) userSignal.removeEventListener("abort", userAbortListener);
 			},
 			provider: model.provider,
 			api: model.api,
 			model: model.id,
 		});
+		// Detach the abort listener on any terminal outcome (success, error,
+		// stall, user-abort) so long-lived user signals don't accumulate
+		// listeners across many calls.
+		wrapped.result().finally(detach);
+		return wrapped;
 	};
 
 	const maxRetries = resolveStreamStallRetries(options?.streamStallRetries);
