@@ -1,0 +1,138 @@
+import type { Api, AssistantMessage, Provider } from "../types.js";
+import { AssistantMessageEventStream } from "./event-stream.js";
+
+const DEFAULT_STREAM_STALL_TIMEOUT_MINUTES = 5;
+const ENV_STREAM_STALL_TIMEOUT_MINUTES = "PI_STREAM_STALL_TIMEOUT_MINUTES";
+
+/**
+ * Resolve the effective stream-stall watchdog timeout in milliseconds.
+ *
+ * Precedence: explicit option > env var (`PI_STREAM_STALL_TIMEOUT_MINUTES`) > 5-minute default.
+ * A value of 0 (or negative) disables the watchdog.
+ */
+export function resolveStreamStallTimeoutMs(explicitMs: number | undefined): number {
+	if (typeof explicitMs === "number" && Number.isFinite(explicitMs)) {
+		return Math.max(0, explicitMs);
+	}
+	const raw = typeof process !== "undefined" ? process.env?.[ENV_STREAM_STALL_TIMEOUT_MINUTES] : undefined;
+	if (raw !== undefined && raw !== "") {
+		const minutes = Number(raw);
+		if (Number.isFinite(minutes)) {
+			return Math.max(0, minutes * 60_000);
+		}
+	}
+	return DEFAULT_STREAM_STALL_TIMEOUT_MINUTES * 60_000;
+}
+
+export interface WatchdogContext {
+	timeoutMs: number;
+	abort: (reason: unknown) => void;
+	provider: Provider;
+	api: Api;
+	model: string;
+}
+
+/**
+ * Wrap an upstream AssistantMessageEventStream with a stall watchdog.
+ *
+ * Each event resets a timer. If no event arrives within `timeoutMs`, the watchdog:
+ *   1. Calls `abort()` so the upstream provider can tear down its connection.
+ *   2. Emits a terminal `error` event with stopReason "error" and a descriptive errorMessage.
+ *   3. Stops forwarding any further upstream events.
+ *
+ * If `timeoutMs <= 0`, the upstream stream is returned unchanged.
+ */
+export function wrapStreamWithWatchdog(
+	upstream: AssistantMessageEventStream,
+	ctx: WatchdogContext,
+): AssistantMessageEventStream {
+	if (ctx.timeoutMs <= 0) return upstream;
+
+	const wrapped = new AssistantMessageEventStream();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let stalled = false;
+	let terminated = false;
+
+	const fireStall = () => {
+		if (terminated) return;
+		stalled = true;
+		terminated = true;
+		try {
+			ctx.abort(new Error(`pi-ai stream-stall watchdog: no chunks for ${ctx.timeoutMs}ms`));
+		} catch {
+			// swallow — provider may already be torn down
+		}
+		const errorMessage = `stream stalled > ${(ctx.timeoutMs / 60_000).toFixed(2)} min, aborting`;
+		const errMsg: AssistantMessage = {
+			role: "assistant",
+			content: [],
+			api: ctx.api,
+			provider: ctx.provider,
+			model: ctx.model,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error",
+			errorMessage,
+			timestamp: Date.now(),
+		};
+		wrapped.push({ type: "error", reason: "error", error: errMsg });
+	};
+
+	const armTimer = () => {
+		if (timer) clearTimeout(timer);
+		timer = setTimeout(fireStall, ctx.timeoutMs);
+	};
+
+	armTimer();
+
+	(async () => {
+		try {
+			for await (const event of upstream) {
+				if (stalled) break;
+				armTimer();
+				wrapped.push(event);
+				if (event.type === "done" || event.type === "error") {
+					terminated = true;
+					break;
+				}
+			}
+		} catch (err) {
+			if (!terminated) {
+				terminated = true;
+				const errMsg: AssistantMessage = {
+					role: "assistant",
+					content: [],
+					api: ctx.api,
+					provider: ctx.provider,
+					model: ctx.model,
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "error",
+					errorMessage: err instanceof Error ? err.message : String(err),
+					timestamp: Date.now(),
+				};
+				wrapped.push({ type: "error", reason: "error", error: errMsg });
+			}
+		} finally {
+			if (timer) {
+				clearTimeout(timer);
+				timer = undefined;
+			}
+			wrapped.end();
+		}
+	})();
+
+	return wrapped;
+}
