@@ -137,6 +137,19 @@ export interface StreamOptions {
 	 */
 	maxRetryDelayMs?: number;
 	/**
+	 * Inter-chunk stall watchdog timeout (milliseconds). If the upstream provider
+	 * stream emits no events for this duration, pi-ai aborts the request and
+	 * terminates the returned stream with an error.
+	 *
+	 * This guards against silent server hangs where the SDK never returns and no
+	 * client-side timeout fires — observed with DeepSeek tool-use calls in
+	 * 2026-05.
+	 *
+	 * Precedence: this option > env var `PI_STREAM_STALL_TIMEOUT_MINUTES` >
+	 * 5-minute default. Set to 0 to disable.
+	 */
+	streamStallTimeoutMs?: number;
+	/**
 	 * Optional metadata to include in API requests.
 	 * Providers extract the fields they understand and ignore the rest.
 	 * For example, Anthropic uses `user_id` for abuse tracking and rate limiting.
