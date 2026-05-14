@@ -5,6 +5,17 @@ const DEFAULT_STREAM_STALL_TIMEOUT_MINUTES = 5;
 const ENV_STREAM_STALL_TIMEOUT_MINUTES = "PI_STREAM_STALL_TIMEOUT_MINUTES";
 
 /**
+ * Prefix used in the `errorMessage` of the synthetic AssistantMessage emitted
+ * by the watchdog. Downstream retry/diagnostic code can match on this prefix
+ * to detect that an error came from the stall watchdog (not from the provider).
+ */
+export const STREAM_STALL_ERROR_PREFIX = "stream stalled";
+
+export function isStreamStallError(message: { errorMessage?: string }): boolean {
+	return typeof message.errorMessage === "string" && message.errorMessage.startsWith(STREAM_STALL_ERROR_PREFIX);
+}
+
+/**
  * Resolve the effective stream-stall watchdog timeout in milliseconds.
  *
  * Precedence: explicit option > env var (`PI_STREAM_STALL_TIMEOUT_MINUTES`) > 5-minute default.
@@ -62,7 +73,7 @@ export function wrapStreamWithWatchdog(
 		} catch {
 			// swallow — provider may already be torn down
 		}
-		const errorMessage = `stream stalled > ${(ctx.timeoutMs / 60_000).toFixed(2)} min, aborting`;
+		const errorMessage = `${STREAM_STALL_ERROR_PREFIX} > ${(ctx.timeoutMs / 60_000).toFixed(2)} min, aborting`;
 		const errMsg: AssistantMessage = {
 			role: "assistant",
 			content: [],

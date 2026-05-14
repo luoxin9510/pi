@@ -150,6 +150,16 @@ export interface StreamOptions {
 	 */
 	streamStallTimeoutMs?: number;
 	/**
+	 * How many times to retry the entire request when the stall watchdog fires
+	 * *and* no content events were yet emitted (a true initial hang — safe to
+	 * retry because the LLM produced nothing replayable). Stalls that happen
+	 * mid-generation are never retried.
+	 *
+	 * Precedence: this option > env var `PI_STREAM_STALL_RETRIES` > 1 (default).
+	 * Set to 0 to disable retry.
+	 */
+	streamStallRetries?: number;
+	/**
 	 * Optional metadata to include in API requests.
 	 * Providers extract the fields they understand and ignore the rest.
 	 * For example, Anthropic uses `user_id` for abuse tracking and rate limiting.
